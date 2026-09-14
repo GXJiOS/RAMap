@@ -34,7 +34,26 @@ const BRIDGE_GROUPS: readonly BridgeGroup[] = [
   { axis: 'y', deck: bridgeDeck(214), dead: 232, capLow: 221, capHigh: 222 },
 ];
 const bridgeGroupOf = (overlay: number) => BRIDGE_GROUPS.find((group) => group.dead === overlay || group.deck.has(overlay));
-export type MapCell = { x: number; y: number; tile: number; subTile: number; level: number; color: number; blocked: string; buildable: boolean; object?: 'building' | 'terrain' | 'unit' | 'start' };
+const OBJECT_LABELS: Record<string, string> = {
+  CAOILD: '油井', CAAIRP: '机场', CAHOSP: '医院', CAMACH: '修理厂', CAPOWR: '电厂',
+  CABHUT: '修桥站', CAOUTP: '哨站', CASLAB: '实验室', CATECH: '科技中心',
+  TIBTRE01: '矿石树', TIBTRE02: '矿石树', TIBTRE03: '矿石树',
+};
+const OBJECT_COLORS: Record<string, number> = {
+  CAOILD: 0xd8a33c, CAAIRP: 0x5b8fc9, CAHOSP: 0xd2645e, CAMACH: 0xb07bd4, CAPOWR: 0xc98f4e,
+  CABHUT: 0x3fa79a, TIBTRE01: 0x7ac368, TIBTRE02: 0x7ac368, TIBTRE03: 0x7ac368,
+};
+export const objectLabel = (name: string) => OBJECT_LABELS[name] ?? name;
+function objectColor(name: string, kind: MapCell['object']): number {
+  const known = OBJECT_COLORS[name];
+  if (known) return known;
+  if (kind === 'terrain') return 0x396840;
+  if (kind === 'unit') return 0xb28667;
+  if (kind === 'start') return 0x5294d9;
+  return name.startsWith('CA') ? 0x8a91a0 : 0x646b78;
+}
+export type MapCell = { x: number; y: number; tile: number; subTile: number; level: number; color: number; blocked: string; buildable: boolean; object?: 'building' | 'terrain' | 'unit' | 'start'; objectName?: string };
+export type MapObject = { kind: NonNullable<MapCell['object']>; name: string; label: string; color: number; x: number; y: number; width: number; height: number };
 type Section = { name: string; start: number; end: number; values: Map<string, string> };
 type CellChange = { id: number; before: number; beforeFrame: number; after: number; afterFrame: number };
 type ObjectChange = { section: ObjectSection; key: string; before?: string; after?: string };
@@ -172,6 +191,7 @@ export class YrmEditSession {
   readonly frames: Uint8Array;
   readonly readOnlyReasons: string[] = [];
   readonly starts: { id: string; x: number; y: number }[] = [];
+  readonly objects: MapObject[] = [];
   private readonly text: string;
   private readonly sections: Map<string, Section>;
   private readonly originalOverlay: Uint8Array;
@@ -186,6 +206,7 @@ export class YrmEditSession {
   private readonly originalObjects = new Map<ObjectSection, Map<string, string>>();
   private savedObjects = new Map<ObjectSection, Map<string, string>>();
   private lastExportObjects: Map<ObjectSection, Map<string, string>> | null = null;
+  private ordered: MapCell[] | null = null;
   private readonly baseBlocked = new Map<number, string>();
   private sealing = new Map<number, BridgeGroup>();
 
@@ -256,17 +277,24 @@ export class YrmEditSession {
   private blockObjects(initial = false): void {
     this.starts.length = 0;
     const reject = (reason: string) => { if (initial) this.readOnlyReasons.push(reason); };
-    const block = (x: number, y: number, object: MapCell['object'], reason: string) => {
-      const cell = this.cells.get(idOf(x, y)); if (cell?.x === x && cell.y === y) { cell.object = object; cell.blocked = reason; }
+    this.objects.length = 0;
+    const block = (x: number, y: number, object: MapCell['object'], reason: string, name = '') => {
+      const cell = this.cells.get(idOf(x, y));
+      if (cell?.x === x && cell.y === y) { cell.object = object; cell.blocked = reason; cell.objectName = name; }
+    };
+    const record = (kind: NonNullable<MapCell['object']>, name: string, x: number, y: number, width: number, height: number) => {
+      this.objects.push({ kind, name, label: objectLabel(name), color: objectColor(name, kind), x, y, width, height });
     };
     for (const group of ['structures', 'units', 'infantry', 'aircraft']) {
       for (const value of this.sections.get(group)?.values.values() ?? []) {
         const parts = value.split(','); const x = Number(parts[3]); const y = Number(parts[4]); const name = parts[1]?.toUpperCase();
         if (!name || !Number.isInteger(x) || !Number.isInteger(y)) { reject(`${group} 包含无效坐标`); continue; }
-        if (group !== 'structures') { block(x, y, 'unit', '单位占地'); continue; }
+        if (group !== 'structures') { block(x, y, 'unit', '单位占地', name); record('unit', name, x, y, 1, 1); continue; }
         const rule = this.stock.buildings[name]; const override = this.sections.get(name.toLowerCase())?.values.get('image')?.toUpperCase();
         if (!rule?.foundation || (override && override !== rule.image)) { reject(`无法识别建筑占地：${name}`); continue; }
-        for (let dy = 0; dy < Math.max(1, rule.foundation[1]); dy += 1) for (let dx = 0; dx < Math.max(1, rule.foundation[0]); dx += 1) block(x + dx, y + dy, 'building', '建筑占地');
+        const across = Math.max(1, rule.foundation[0]); const down = Math.max(1, rule.foundation[1]);
+        for (let dy = 0; dy < down; dy += 1) for (let dx = 0; dx < across; dx += 1) block(x + dx, y + dy, 'building', '建筑占地', name);
+        record('building', name, x, y, across, down);
       }
     }
     for (const [location, type] of this.sections.get('terrain')?.values ?? []) {
@@ -274,7 +302,8 @@ export class YrmEditSession {
       const name = type.toUpperCase(); const rule = this.stock.terrain[name]; const override = this.sections.get(name.toLowerCase())?.values.get('image')?.toUpperCase();
       if (!Number.isInteger(coordinate) || !rule?.foundation || (override && override !== rule.image)) { reject(`无法识别地形对象：${name}`); continue; }
       // 树木的遮挡范围覆盖其占地和相邻格，画笔保留这片区域。
-      for (let dy = -1; dy <= rule.foundation[1]; dy += 1) for (let dx = -1; dx <= rule.foundation[0]; dx += 1) block(x + dx, y + dy, 'terrain', '树木或地形对象附近');
+      for (let dy = -1; dy <= rule.foundation[1]; dy += 1) for (let dx = -1; dx <= rule.foundation[0]; dx += 1) block(x + dx, y + dy, 'terrain', '树木或地形对象附近', name);
+      record('terrain', name, x, y, Math.max(1, rule.foundation[0]), Math.max(1, rule.foundation[1]));
     }
     for (const [name, value] of this.sections.get('waypoints')?.values ?? []) {
       if (!/^[0-7]$/.test(name) || !/^\d+$/.test(value)) continue;
@@ -284,6 +313,12 @@ export class YrmEditSession {
     }
   }
 
+  get overlayNames(): readonly string[] { return this.stock.overlays; }
+  // 等距绘制要求从远到近，顺序固定后缓存下来。
+  get drawOrder(): readonly MapCell[] {
+    if (!this.ordered) this.ordered = [...this.cells.values()].sort((a, b) => (a.x + a.y) - (b.x + b.y) || a.x - b.x);
+    return this.ordered;
+  }
   get readOnly() { return this.readOnlyReasons.length > 0; }
   get dirty() { return this.unsaved.size > 0 || this.objectDiff(this.savedObjects) > 0; }
   get changedCount() { return this.changed.size; }
@@ -352,6 +387,7 @@ export class YrmEditSession {
       if (cell?.x !== x + dx || cell.y !== y + dy) continue;
       cell.object = spec.section === 'terrain' ? 'terrain' : 'building';
       cell.blocked = spec.section === 'terrain' ? '树木或地形对象附近' : '建筑占地';
+      cell.objectName = spec.name;
     }
   }
   objectAt(x: number, y: number): { section: ObjectSection; key: string; name: string } | undefined {
@@ -424,7 +460,7 @@ export class YrmEditSession {
     this.writeObject(section, key, after);
   }
   private refreshObjects(): void {
-    for (const cell of this.cells.values()) { cell.object = undefined; cell.blocked = this.baseBlocked.get(idOf(cell.x, cell.y)) ?? ''; }
+    for (const cell of this.cells.values()) { cell.object = undefined; cell.objectName = undefined; cell.blocked = this.baseBlocked.get(idOf(cell.x, cell.y)) ?? ''; }
     this.blockObjects();
   }
   beginStroke() { if (this.stroke) throw new Error('请先结束当前笔画。'); this.stroke = { list: [], cells: new Map() }; }
@@ -557,10 +593,7 @@ export class YrmEditSession {
     if (resource) return resource === 'ore' ? 0xe8cb27 : 0xb650d7;
     const bridge = bridgeGroupOf(this.overlay[idOf(cell.x, cell.y)]);
     if (bridge) return this.overlay[idOf(cell.x, cell.y)] === bridge.dead ? 0x6b4130 : 0xb2854e;
-    if (cell.object === 'building') return 0x747c89;
-    if (cell.object === 'terrain') return 0x396840;
-    if (cell.object === 'unit') return 0xb28667;
-    if (cell.object === 'start') return 0x5294d9;
+    if (cell.object) return objectColor(cell.objectName ?? '', cell.object);
     if (this.overlay[idOf(cell.x, cell.y)] !== 255) return 0x565965;
     return cell.color;
   }
