@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Action, Select, ToolWorkspace } from '../components/ToolWorkspace';
 import { bytesToBase64, errorMessage, saveBytes } from '../lib/tool-actions';
 import { PLACEABLE, YrmEditSession, type EditBrush, type PlaceKind } from '../lib/yrm-editor';
+import { GameArt, theaterSupported } from '../lib/game-art';
+import { collectArtNames, renderFullMap, renderMap, worldSize } from '../lib/map-render';
 import { MAP_GAME_NAMES, mapOutputName } from '../lib/yrm-preview';
+
+const ART_PREFERENCE = 'ramap.real-art';
 
 export function YRMEditor({ session, filename, onClose }: { session: YrmEditSession; filename: string; onClose(): void }) {
   const [brush, setBrush] = useState<EditBrush | 'move'>('ore');
@@ -15,15 +19,31 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('选择画笔，在可绘制的格子上按住并拖动。');
   const [error, setError] = useState('');
+  const [art, setArt] = useState<GameArt | null>(null);
+  const [artPending, setArtPending] = useState(false);
+  const [artRaster, setArtRaster] = useState<HTMLCanvasElement | null>(null);
+  const artRevision = useRef(-1);
   const canvas = useRef<HTMLCanvasElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const dragging = useRef<{ id: number; mode: 'paint' | 'move'; clientX: number; clientY: number; x: number; y: number; pan: typeof pan } | null>(null);
   const raster = useRef<HTMLCanvasElement | null>(null);
+  const offscreen = useRef<HTMLCanvasElement | null>(null);
   const update = () => setRevision((value) => value + 1);
-  const worldWidth = session.info.width * 24;
-  const worldHeight = (session.info.height * 2 + 1) * 6;
+  const world = useMemo(() => worldSize(session), [session]);
+  const worldWidth = session.info.width * 60;
+  const worldHeight = (session.info.height * 2 + 1) * 15;
   const scale = Math.min((size.width - 24) / worldWidth, (size.height - 24) / worldHeight) * Number(zoom);
   const origin = { x: (size.width - worldWidth * scale) / 2 + pan.x, y: (size.height - worldHeight * scale) / 2 + pan.y };
+
+  useEffect(() => {
+    try { if (localStorage.getItem(ART_PREFERENCE) === '1') void loadArt(true); } catch { /* 忽略存储不可用。 */ }
+  }, [session]);
+
+  useEffect(() => {
+    if (!art || artRevision.current === revision) return;
+    const timer = setTimeout(() => { artRevision.current = revision; setArtRaster(renderFullMap(session, art, 2600)); }, 400);
+    return () => clearTimeout(timer);
+  }, [art, revision, session]);
 
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) => setSize({ width: Math.max(200, entry.contentRect.width), height: 480 }));
@@ -50,26 +70,44 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     image.width = Math.round(size.width * dpr); image.height = Math.round(size.height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.fillStyle = '#252d35'; ctx.fillRect(0, 0, size.width, size.height);
-    ctx.translate(origin.x, origin.y); ctx.scale(scale, scale); ctx.imageSmoothingEnabled = false;
-    if (raster.current) ctx.drawImage(raster.current, 0, 0, worldWidth, worldHeight);
+    ctx.imageSmoothingEnabled = false;
+    const viewWidth = Math.max(1, Math.ceil(size.width / scale)); const viewHeight = Math.max(1, Math.ceil(size.height / scale));
+    const painted = Boolean(art) && viewWidth * viewHeight <= 12_000_000;
+    if (painted && art) {
+      let buffer = offscreen.current;
+      if (!buffer) { buffer = document.createElement('canvas'); offscreen.current = buffer; }
+      if (buffer.width !== viewWidth || buffer.height !== viewHeight) { buffer.width = viewWidth; buffer.height = viewHeight; }
+      const target = buffer.getContext('2d', { willReadFrequently: true });
+      if (target) {
+        const image = target.createImageData(viewWidth, viewHeight);
+        renderMap(image, session, art, { left: -origin.x / scale, top: -origin.y / scale, width: viewWidth, height: viewHeight }, session.overlayNames, session.drawOrder);
+        target.putImageData(image, 0, 0);
+        ctx.drawImage(buffer, 0, 0, viewWidth, viewHeight, 0, 0, size.width, size.height);
+      }
+    }
+    ctx.translate(origin.x, origin.y); ctx.scale(scale, scale);
+    if (!painted) {
+      if (artRaster) ctx.drawImage(artRaster, world.left, world.top, world.width, world.height);
+      else if (raster.current) ctx.drawImage(raster.current, 0, 0, worldWidth, worldHeight);
+    }
     const diamond = (x: number, y: number) => {
-      const cx = (x - y + session.info.width) * 12; const cy = (x + y - session.info.width) * 6;
-      ctx.beginPath(); ctx.moveTo(cx, cy - 6); ctx.lineTo(cx + 12, cy); ctx.lineTo(cx, cy + 6); ctx.lineTo(cx - 12, cy); ctx.closePath();
+      const cx = (x - y + session.info.width) * 30; const cy = (x + y - session.info.width) * 15;
+      ctx.beginPath(); ctx.moveTo(cx, cy - 15); ctx.lineTo(cx + 30, cy); ctx.lineTo(cx, cy + 15); ctx.lineTo(cx - 30, cy); ctx.closePath();
     };
-    if (scale * 24 >= 9) {
+    if (scale * 60 >= 9) {
       ctx.lineWidth = 0.65 / scale; ctx.strokeStyle = '#00000035';
       for (const cell of session.cells.values()) {
-        const cx = (cell.x - cell.y + session.info.width) * 12 * scale + origin.x;
-        const cy = (cell.x + cell.y - session.info.width) * 6 * scale + origin.y;
-        if (cx < -24 * scale || cx > size.width + 24 * scale || cy < -12 * scale || cy > size.height + 12 * scale) continue;
+        const cx = (cell.x - cell.y + session.info.width) * 30 * scale + origin.x;
+        const cy = (cell.x + cell.y - session.info.width) * 15 * scale + origin.y;
+        if (cx < -60 * scale || cx > size.width + 60 * scale || cy < -30 * scale || cy > size.height + 30 * scale) continue;
         diamond(cell.x, cell.y); ctx.stroke();
         if (cell.blocked) { ctx.fillStyle = '#00000024'; ctx.fill(); }
       }
     }
     for (const point of session.starts) {
-      const x = (point.x - point.y + session.info.width) * 12; const y = (point.x + point.y - session.info.width) * 6;
-      ctx.fillStyle = '#2867c7'; ctx.beginPath(); ctx.arc(x, y, 9 / scale, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#ffffff'; ctx.font = `bold ${11 / scale}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(point.id, x, y);
+      const x = (point.x - point.y + session.info.width) * 30; const y = (point.x + point.y - session.info.width) * 15;
+      ctx.fillStyle = '#2867c7'; ctx.beginPath(); ctx.arc(x, y, 16 / scale, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffffff'; ctx.font = `bold ${18 / scale}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(point.id, x, y);
     }
     if (hover && brush !== 'move') {
       const footprint = brush in PLACEABLE ? session.footprint(brush as PlaceKind) : null;
@@ -88,11 +126,11 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
         }
       }
     }
-  }, [session, size, scale, origin.x, origin.y, worldWidth, worldHeight, revision, hover, brush, radius]);
+  }, [session, size, scale, origin.x, origin.y, worldWidth, worldHeight, revision, hover, brush, radius, art, artRaster, world]);
 
   const coordinates = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
-    const u = (event.clientX - bounds.left - origin.x) / (12 * scale); const v = (event.clientY - bounds.top - origin.y) / (6 * scale);
+    const u = (event.clientX - bounds.left - origin.x) / (30 * scale); const v = (event.clientY - bounds.top - origin.y) / (15 * scale);
     return { x: Math.round((u + v) / 2), y: Math.round((v - u) / 2 + session.info.width) };
   };
   const drawLine = (from: { x: number; y: number }, to: { x: number; y: number }) => {
@@ -112,6 +150,30 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
       update();
     }
     dragging.current = null;
+  };
+  const loadArt = async (silent = false) => {
+    const bridge = window.mapDesktop;
+    if (!bridge) { if (!silent) setError('网页版无法读取游戏资源，请在桌面应用中使用。'); return; }
+    if (!theaterSupported(session.info.theater)) { if (!silent) setError(`暂不支持 ${session.info.theater} 地形的真实贴图。`); return; }
+    setArtPending(true); setError('');
+    try {
+      let status = await bridge.assetStatus();
+      if (!status) {
+        if (silent) return;
+        const folder = await bridge.chooseFolder();
+        if (!folder) return;
+        status = await bridge.openAssets(folder);
+      }
+      const next = new GameArt(session.info.theater);
+      if (!await next.prepare()) { setError('没能读出该地形的图块表，请确认目录里是完整的游戏资源。'); return; }
+      await next.load(collectArtNames(session, next, session.overlayNames));
+      setArt(next);
+      artRevision.current = revision;
+      setArtRaster(renderFullMap(session, next, 2600));
+      try { localStorage.setItem(ART_PREFERENCE, '1'); } catch { /* 存不下就只在本次会话生效。 */ }
+      setMessage(`已载入游戏贴图（${status.files} 个资源文件），缩放低于 25% 时仍显示色块示意图。`);
+    } catch (cause) { if (!silent) setError(errorMessage(cause)); }
+    finally { setArtPending(false); }
   };
   const undo = () => { finish(); session.undo(); update(); };
   const redo = () => { finish(); session.redo(); update(); };
@@ -139,6 +201,12 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
         <Select label="工具" value={brush} options={[["ore", "矿石"], ["gems", "宝石"], ["erase", "擦除资源"], ["bridge", "断桥"], ["oil", "油井"], ["airport", "科技机场"], ["hospital", "市民医院"], ["oretree", "矿石树"], ["remove", "删除对象"], ["move", "平移画布"]]} onChange={(value) => { finish(); setBrush(value); }} />
         <Select label="画笔" value={radius} options={[["0", "1 × 1"], ["1", "3 × 3"], ["2", "5 × 5"]]} onChange={(value) => { finish(); setRadius(value); }} />
         <Select label="缩放" value={zoom} options={[["1", "适应窗口"], ["2", "2×"], ["4", "4×"], ["8", "8×"]]} onChange={(value) => { finish(); setZoom(value); setPan({ x: 0, y: 0 }); }} />
+        <button type="button" className="work-button" disabled={artPending || saving} onClick={() => {
+          if (!art) { void loadArt(); return; }
+          setArt(null); setArtRaster(null); artRevision.current = -1;
+          try { localStorage.setItem(ART_PREFERENCE, '0'); } catch { /* 忽略存储不可用。 */ }
+          setMessage('已切回色块示意图。');
+        }}>{artPending ? '载入贴图…' : art ? '示意图' : '真实贴图'}</button>
         <button type="button" className="work-button" disabled={!session.canUndo || saving} onClick={undo}>撤销</button>
         <button type="button" className="work-button" disabled={!session.canRedo || saving} onClick={redo}>重做</button>
         <Action primary disabled={session.readOnly || !session.dirty || session.activeStroke || saving} onAction={async () => {
