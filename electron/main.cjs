@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { createFiles } = require('./files.cjs');
+const { createAssets } = require('./mix.cjs');
 
 const installCheck = process.argv.includes('--install-check');
 const checkData = installCheck ? mkdtempSync(path.join(app.getPath('temp'), 'ramap-install-check-')) : null;
@@ -12,6 +13,7 @@ if (installCheck) app.setPath('sessionData', checkData);
 let mainWindow = null;
 let checkFinished = false;
 const files = createFiles({ dialog, getWindow: () => mainWindow });
+const assets = createAssets(installCheck ? null : path.join(app.getPath('userData'), 'settings.json'));
 const checkTimeout = installCheck ? setTimeout(() => finishInstallCheck(new Error('启动超过 15 秒')), 15000) : null;
 
 function finishInstallCheck(error) {
@@ -35,7 +37,7 @@ function observeInstallCheck(window) {
         function check() {
           const content = document.querySelector('#root .ramap-app');
           const bridge = window.mapDesktop;
-          const methods = ['saveFile'];
+          const methods = ['saveFile', 'openAssets', 'readAsset'];
           if (content?.textContent.trim() && document.styleSheets.length > 0
             && bridge?.platform === 'darwin' && methods.every((name) => typeof bridge[name] === 'function')) resolve(true);
           else if (Date.now() >= deadline) reject(new Error('页面或桌面桥接尚未就绪'));
@@ -120,6 +122,13 @@ function handle(name, operation) {
   });
 }
 handle('save-file', files.saveFile);
+handle('assets-open', (directory) => assets.open(directory));
+handle('assets-status', () => assets.status() ?? assets.restore());
+handle('assets-read', (name) => assets.read(name));
+handle('choose-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { title: '选择红警游戏资源目录（含 ra2md.mix）', properties: ['openDirectory'] });
+  return result.canceled || !result.filePaths.length ? null : result.filePaths[0];
+});
 
 if (!installCheck && !app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
