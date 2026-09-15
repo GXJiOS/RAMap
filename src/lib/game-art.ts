@@ -119,12 +119,13 @@ export class GameArt {
     for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
     return bytes;
   }
-  async load(names: readonly string[]): Promise<void> {
+  async load(names: readonly string[]): Promise<number> {
     const bridge = window.mapDesktop;
-    if (!bridge) return;
+    if (!bridge) return 0;
     const pending = [...new Set(names)].filter((name) => !this.raw.has(name));
     const results = await Promise.all(pending.map(async (name) => [name, await bridge.readAsset(name)] as const));
-    for (const [name, value] of results) this.raw.set(name, value ? GameArt.decode(value) : null);
+    for (const [name, value] of results) { this.raw.set(name, value ? GameArt.decode(value) : null); this.shps.delete(name); }
+    return results.filter(([, value]) => value).length;
   }
   async prepare(): Promise<boolean> {
     await this.load([this.theaterFile, `iso${this.extension}.pal`, `unit${this.extension}.pal`, 'isotem.pal', 'unittem.pal']);
@@ -137,6 +138,7 @@ export class GameArt {
   }
   bytes(name: string): Uint8Array | null { return this.raw.get(name) ?? null; }
   shp(name: string): Shp | null {
+    if (!this.raw.has(name)) return null;
     if (!this.shps.has(name)) {
       const bytes = this.raw.get(name);
       this.shps.set(name, bytes ? readShp(bytes) : null);

@@ -1,5 +1,5 @@
 import { decodeShpFrame, GameArt, readTile, TILE_HEIGHT, TILE_WIDTH, type Palette } from './game-art';
-import type { MapCell, YrmEditSession } from './yrm-editor';
+import { PLACEABLE, type MapCell, type YrmEditSession } from './yrm-editor';
 
 export type View = { left: number; top: number; width: number; height: number };
 // 建筑和树高过格子，向上多留一截才不会画到一半。
@@ -23,6 +23,19 @@ export function collectArtNames(session: YrmEditSession, art: GameArt, overlays:
   for (const object of session.objects) {
     if (!object.name) continue;
     names.add(object.kind === 'building' || object.kind === 'unit' ? `${object.name.toLowerCase()}.shp` : `${object.name.toLowerCase()}.${art.extension}`);
+  }
+  return [...names];
+}
+
+// 编辑器能放进地图的对象与覆盖物，进编辑器时一并预载，放下去就能画出来。
+export function editingArtNames(session: YrmEditSession, art: GameArt): string[] {
+  const names = new Set<string>();
+  for (const spec of Object.values(PLACEABLE)) {
+    names.add(spec.section === 'structures' ? `${spec.name.toLowerCase()}.shp` : `${spec.name.toLowerCase()}.${art.extension}`);
+  }
+  for (const id of session.editableOverlays) {
+    const name = session.overlayNames[id];
+    if (name) names.add(`${name.toLowerCase()}.${art.extension}`);
   }
   return [...names];
 }
@@ -61,7 +74,8 @@ export function renderMap(image: ImageData, session: YrmEditSession, art: GameAr
   const stats: RenderStats = { terrain: 0, overlays: 0, objects: 0 };
   const objectsByCell = new Map<number, typeof session.objects>();
   for (const object of session.objects) {
-    const key = object.y * 512 + object.x;
+    const anchorX = object.x + object.width - 1; const anchorY = object.y + object.height - 1;
+    const key = anchorY * 512 + anchorX;
     const list = objectsByCell.get(key);
     if (list) list.push(object); else objectsByCell.set(key, [object]);
   }
