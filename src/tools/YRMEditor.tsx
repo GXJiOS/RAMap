@@ -3,7 +3,7 @@ import { Action, Select, ToolWorkspace } from '../components/ToolWorkspace';
 import { bytesToBase64, errorMessage, saveBytes } from '../lib/tool-actions';
 import { PLACEABLE, YrmEditSession, type EditBrush, type PlaceKind } from '../lib/yrm-editor';
 import { GameArt, theaterSupported } from '../lib/game-art';
-import { collectArtNames, renderFullMap, renderMap, worldSize } from '../lib/map-render';
+import { collectArtNames, editingArtNames, renderFullMap, renderMap, worldSize } from '../lib/map-render';
 import { MAP_GAME_NAMES, mapOutputName } from '../lib/yrm-preview';
 
 const ART_PREFERENCE = 'ramap.real-art';
@@ -11,7 +11,7 @@ const ART_PREFERENCE = 'ramap.real-art';
 export function YRMEditor({ session, filename, onClose }: { session: YrmEditSession; filename: string; onClose(): void }) {
   const [brush, setBrush] = useState<EditBrush | 'move'>('ore');
   const [radius, setRadius] = useState('0');
-  const [zoom, setZoom] = useState('1');
+  const [zoom, setZoom] = useState('fit');
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [size, setSize] = useState({ width: 800, height: 480 });
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
@@ -32,12 +32,21 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
   const world = useMemo(() => worldSize(session), [session]);
   const worldWidth = session.info.width * 60;
   const worldHeight = (session.info.height * 2 + 1) * 15;
-  const scale = Math.min((size.width - 24) / worldWidth, (size.height - 24) / worldHeight) * Number(zoom);
+  const fitScale = Math.min((size.width - 24) / worldWidth, (size.height - 24) / worldHeight);
+  const scale = zoom === 'fit' ? fitScale : Number(zoom);
   const origin = { x: (size.width - worldWidth * scale) / 2 + pan.x, y: (size.height - worldHeight * scale) / 2 + pan.y };
 
   useEffect(() => {
     try { if (localStorage.getItem(ART_PREFERENCE) === '1') void loadArt(true); } catch { /* 忽略存储不可用。 */ }
   }, [session]);
+
+  // 编辑可能引入尚未载入的贴图（如删除后露出的对象），补载后重画
+  useEffect(() => {
+    if (!art) return;
+    let cancelled = false;
+    void art.load(collectArtNames(session, art, session.overlayNames)).then((added) => { if (added && !cancelled) update(); });
+    return () => { cancelled = true; };
+  }, [art, revision, session]);
 
   useEffect(() => {
     if (!art || artRevision.current === revision) return;
@@ -70,7 +79,7 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     image.width = Math.round(size.width * dpr); image.height = Math.round(size.height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.fillStyle = '#252d35'; ctx.fillRect(0, 0, size.width, size.height);
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = scale < 1;
     const viewWidth = Math.max(1, Math.ceil(size.width / scale)); const viewHeight = Math.max(1, Math.ceil(size.height / scale));
     const painted = Boolean(art) && viewWidth * viewHeight <= 12_000_000;
     if (painted && art) {
@@ -166,7 +175,7 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
       }
       const next = new GameArt(session.info.theater);
       if (!await next.prepare()) { setError('没能读出该地形的图块表，请确认目录里是完整的游戏资源。'); return; }
-      await next.load(collectArtNames(session, next, session.overlayNames));
+      await next.load([...collectArtNames(session, next, session.overlayNames), ...editingArtNames(session, next)]);
       setArt(next);
       artRevision.current = revision;
       setArtRaster(renderFullMap(session, next, 2600));
@@ -198,9 +207,9 @@ export function YRMEditor({ session, filename, onClose }: { session: YrmEditSess
     }}>
       {session.readOnly && <div className="work-error" role="status"><strong>当前地图只读</strong><ul>{[...new Set(session.readOnlyReasons)].slice(0, 6).map((reason) => <li key={reason}>{reason}</li>)}</ul></div>}
       <div className="yrm-edit-controls">
-        <Select label="工具" value={brush} options={[["ore", "矿石"], ["gems", "宝石"], ["erase", "擦除资源"], ["bridge", "断桥"], ["oil", "油井"], ["airport", "科技机场"], ["hospital", "市民医院"], ["oretree", "矿石树"], ["remove", "删除对象"], ["move", "平移画布"]]} onChange={(value) => { finish(); setBrush(value); }} />
+        <Select label="工具" value={brush} options={[["ore", "矿石"], ["gems", "宝石"], ["erase", "擦除资源"], ["bridge", "断桥"], ["oil", "油井"], ["airport", "科技机场"], ["hospital", "科技医院"], ["bridgehut", "修桥站"], ["machineshop", "修理厂"], ["power", "电厂"], ["lab", "秘密实验室"], ["outpost", "哨站"], ["oretree", "矿石树"], ["remove", "删除对象"], ["move", "平移画布"]]} onChange={(value) => { finish(); setBrush(value); }} />
         <Select label="画笔" value={radius} options={[["0", "1 × 1"], ["1", "3 × 3"], ["2", "5 × 5"]]} onChange={(value) => { finish(); setRadius(value); }} />
-        <Select label="缩放" value={zoom} options={[["1", "适应窗口"], ["2", "2×"], ["4", "4×"], ["8", "8×"]]} onChange={(value) => { finish(); setZoom(value); setPan({ x: 0, y: 0 }); }} />
+        <Select label="缩放" value={zoom} options={[["fit", "适应窗口"], ["0.5", "50%"], ["1", "100%"], ["2", "200%"], ["4", "400%"]]} onChange={(value) => { finish(); setZoom(value); setPan({ x: 0, y: 0 }); }} />
         <button type="button" className="work-button" disabled={artPending || saving} onClick={() => {
           if (!art) { void loadArt(); return; }
           setArt(null); setArtRaster(null); artRevision.current = -1;
