@@ -10,14 +10,19 @@ type StockRules = {
   overlays: string[]; resources: Record<'ore' | 'gems', number[]>; resourceRuleNames: string[];
 };
 const stockProfiles: Record<MapGame, StockRules> = { yr: stockData as unknown as StockRules, ra2: ra2StockData as unknown as StockRules };
-export type PlaceKind = 'oil' | 'airport' | 'hospital' | 'oretree';
+export type PlaceKind = 'oil' | 'airport' | 'hospital' | 'bridgehut' | 'machineshop' | 'power' | 'lab' | 'outpost' | 'oretree';
 export type EditBrush = 'ore' | 'gems' | 'erase' | 'bridge' | PlaceKind | 'remove';
 type ObjectSection = 'structures' | 'terrain';
 type Placeable = { label: string; section: ObjectSection; name: string };
 export const PLACEABLE: Record<PlaceKind, Placeable> = {
   oil: { label: '油井', section: 'structures', name: 'CAOILD' },
   airport: { label: '科技机场', section: 'structures', name: 'CAAIRP' },
-  hospital: { label: '市民医院', section: 'structures', name: 'CAHOSP' },
+  hospital: { label: '科技医院', section: 'structures', name: 'CATHOSP' },
+  bridgehut: { label: '修桥站', section: 'structures', name: 'CABHUT' },
+  machineshop: { label: '修理厂', section: 'structures', name: 'CAMACH' },
+  power: { label: '电厂', section: 'structures', name: 'CAPOWR' },
+  lab: { label: '秘密实验室', section: 'structures', name: 'CASLAB' },
+  outpost: { label: '哨站', section: 'structures', name: 'CAOUTP' },
   oretree: { label: '矿石树', section: 'terrain', name: 'TIBTRE01' },
 };
 // 中立建筑行的 17 个字段，除类型与坐标外在 2 万余个原版条目中取值一致。
@@ -35,13 +40,13 @@ const BRIDGE_GROUPS: readonly BridgeGroup[] = [
 ];
 const bridgeGroupOf = (overlay: number) => BRIDGE_GROUPS.find((group) => group.dead === overlay || group.deck.has(overlay));
 const OBJECT_LABELS: Record<string, string> = {
-  CAOILD: '油井', CAAIRP: '机场', CAHOSP: '医院', CAMACH: '修理厂', CAPOWR: '电厂',
-  CABHUT: '修桥站', CAOUTP: '哨站', CASLAB: '实验室', CATECH: '科技中心',
+  CAOILD: '油井', CAAIRP: '机场', CATHOSP: '科技医院', CAHOSP: '医院（布景）', CAMACH: '修理厂', CAPOWR: '电厂',
+  CABHUT: '修桥站', CAOUTP: '哨站', CASLAB: '秘密实验室',
   TIBTRE01: '矿石树', TIBTRE02: '矿石树', TIBTRE03: '矿石树',
 };
 const OBJECT_COLORS: Record<string, number> = {
-  CAOILD: 0xd8a33c, CAAIRP: 0x5b8fc9, CAHOSP: 0xd2645e, CAMACH: 0xb07bd4, CAPOWR: 0xc98f4e,
-  CABHUT: 0x3fa79a, TIBTRE01: 0x7ac368, TIBTRE02: 0x7ac368, TIBTRE03: 0x7ac368,
+  CAOILD: 0xd8a33c, CAAIRP: 0x5b8fc9, CATHOSP: 0xd2645e, CAHOSP: 0xa88a8a, CAMACH: 0xb07bd4, CAPOWR: 0xc98f4e,
+  CABHUT: 0x3fa79a, CASLAB: 0x6fc0c9, CAOUTP: 0x9c9a5e, TIBTRE01: 0x7ac368, TIBTRE02: 0x7ac368, TIBTRE03: 0x7ac368,
 };
 export const objectLabel = (name: string) => OBJECT_LABELS[name] ?? name;
 function objectColor(name: string, kind: MapCell['object']): number {
@@ -314,6 +319,12 @@ export class YrmEditSession {
   }
 
   get overlayNames(): readonly string[] { return this.stock.overlays; }
+  // 编辑器可能写进地图的全部覆盖物编号，贴图要提前备齐。
+  get editableOverlays(): readonly number[] {
+    const ids = new Set<number>([...this.stock.resources.ore, ...this.stock.resources.gems]);
+    for (const group of BRIDGE_GROUPS) { for (const id of group.deck) ids.add(id); ids.add(group.dead); }
+    return [...ids];
+  }
   // 等距绘制要求从远到近，顺序固定后缓存下来。
   get drawOrder(): readonly MapCell[] {
     if (!this.ordered) this.ordered = [...this.cells.values()].sort((a, b) => (a.x + a.y) - (b.x + b.y) || a.x - b.x);

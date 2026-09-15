@@ -298,7 +298,12 @@ describe('placing and removing map objects', () => {
   it.each([
     ['oil' as const, 'CAOILD', 2, 2],
     ['airport' as const, 'CAAIRP', 3, 3],
-    ['hospital' as const, 'CAHOSP', 6, 4],
+    ['hospital' as const, 'CATHOSP', 6, 4],
+    ['bridgehut' as const, 'CABHUT', 1, 1],
+    ['machineshop' as const, 'CAMACH', 3, 3],
+    ['power' as const, 'CAPOWR', 2, 2],
+    ['lab' as const, 'CASLAB', 3, 3],
+    ['outpost' as const, 'CAOUTP', 4, 3],
   ])('places %s as a neutral structure row using the stock footprint', (kind, name, width, height) => {
     const session = new YrmEditSession(fixture());
     expect(session.footprint(kind)).toEqual([width, height]);
