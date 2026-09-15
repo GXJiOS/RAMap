@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "红警 2 / 尤里的复仇地图预览与编辑器",
+  "license": "MIT",
   "type": "module",
   "main": "electron/main.cjs",
   "engines": {

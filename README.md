@@ -38,3 +38,11 @@ make clean     # 清除 build/ 与 dist/
 `src/data/yrm-stock-data.json` 与 `ra2-stock-data.json` 是从原版 `rules.ini` 与 `art.ini` 提取的地形、建筑占地、覆盖物与资源编号表，文件内记录了来源文件的 SHA-256。地图格式的处理规则（低桥断口编号、中立建筑行格式、矿石树坐标编码等）来自对原版数据和大量真实地图的比对，未使用任何现有编辑器的代码。
 
 含自定义规则的地图（改写了 `[OverlayTypes]`、`[BuildingTypes]`、占地等）会被标记为只读，只提供预览。
+
+## 许可证
+
+代码以 [MIT](LICENSE) 发布。
+
+游戏美术与规则资源不包含在本项目中：应用在运行时读取使用者本机安装的红警 2 / 尤里的复仇资源，
+这些内容的版权归 Westwood Studios 与 Electronic Arts 所有，不随本项目分发。
+地图格式的处理规则由原版数据与真实地图比对得出，未使用 FinalAlert、XCC、ccmaps-net 等既有工具的代码。
